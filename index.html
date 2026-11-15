@@ -25,6 +25,7 @@ button:disabled{opacity:.46;cursor:default}
 select{max-width:100%}
 label{display:inline-flex;align-items:center;gap:6px}
 input[type=color]{width:42px;height:36px}
+input[type=number]{width:5rem;min-height:42px;font:inherit}
 input[type=range]{width:105px}
 section>.row+.row{margin-top:8px}
 summary{cursor:pointer;color:#fbbf24}
@@ -37,6 +38,9 @@ summary{cursor:pointer;color:#fbbf24}
 <div class="row"><button id="draw">Dessiner</button><button id="random">Départ aléatoire</button></div>
 <p><label for="patterns">Choisir un motif</label></p>
 <select id="patterns"><option value="">Sélectionner…</option></select>
+</section>
+<section aria-label="Taille du plateau">
+<form id="resize" class="row"><label>Côté (10 à 200) <input id="dimension" type="number" min="10" max="200" step="1" value="25" required></label><button>Appliquer</button></form>
 </section>
 <section class="board" aria-label="Plateau"><canvas id="board" width="750" height="750" aria-label="Grille de Conway de 25 par 25 cases"></canvas></section>
 <section aria-label="Commandes">
@@ -66,9 +70,7 @@ summary{cursor:pointer;color:#fbbf24}
 <script>
 'use strict';
 const ui = Object.fromEntries([...document.querySelectorAll('[id]')].map(element => [element.id, element]));
-const size = 25;
-const area = size * size;
-const cell = ui.board.width / size;
+let size = 25;
 const ctx = ui.board.getContext('2d');
 const storageKey = 'conway-jeu-de-la-vie-25-v1:' + location.pathname;
 const builtins = {
@@ -81,10 +83,12 @@ try {
   const records = JSON.parse(localStorage.getItem(storageKey));
   if (Array.isArray(records)) {
     saved = records.filter(record => record && typeof record.name === 'string' &&
-      typeof record.cells === 'string' && /^[01]{625}$/.test(record.cells));
+      Number.isInteger(record.size ?? 25) && (record.size ?? 25) >= 10 &&
+      (record.size ?? 25) <= 200 && typeof record.cells === 'string' &&
+      record.cells.length === (record.size ?? 25) ** 2 && /^[01]+$/.test(record.cells));
   }
 } catch {}
-let grid = new Uint8Array(area);
+let grid = new Uint8Array(size * size);
 let initial = null;
 let generation = 0;
 let timer = null;
@@ -98,6 +102,7 @@ function populatePatterns() {
 }
 
 function render() {
+  const cell = ui.board.width / size;
   ctx.fillStyle = ui.dead.value;
   ctx.fillRect(0, 0, ui.board.width, ui.board.height);
   ctx.fillStyle = ui.alive.value;
@@ -108,7 +113,7 @@ function render() {
     ctx.fillRect((index % size) * cell, Math.floor(index / size) * cell, cell, cell);
   });
   ctx.beginPath();
-  for (let i = 1; i < size; i++) {
+  for (let i = 1; i < size && size <= 70; i++) {
     const p = i * cell + .5;
     ctx.moveTo(p, 0); ctx.lineTo(p, ui.board.height);
     ctx.moveTo(0, p); ctx.lineTo(ui.board.width, p);
@@ -116,7 +121,7 @@ function render() {
   ctx.strokeStyle = '#80808066';
   ctx.stroke();
   ui.stats.textContent = 'Génération ' + generation + ' · ' + population + ' vivantes';
-  ui.board.classList.toggle('editable', !!mode && timer === null);
+  ui.board.classList.add('editable');
   ui.play.disabled = ui.step.disabled = ui.clear.disabled = !mode;
   ui.clear.disabled ||= timer !== null;
   ui.save.disabled = !mode || population === 0;
@@ -126,7 +131,7 @@ function render() {
 
 function advance() {
   if (!initial) initial = grid.slice();
-  const next = new Uint8Array(area);
+  const next = new Uint8Array(size * size);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       let neighbors = 0;
@@ -158,7 +163,7 @@ function run() {
   ui.play.innerHTML = '<span aria-hidden="true">Ⅱ</span> Pause';
 }
 
-function setup(nextMode, cells = new Uint8Array(area)) {
+function setup(nextMode, cells = new Uint8Array(size * size)) {
   pause();
   stroke = null;
   mode = nextMode;
@@ -169,19 +174,24 @@ function setup(nextMode, cells = new Uint8Array(area)) {
   ui.patterns.value = '';
   ui.status.textContent = '';
   ui.hint.textContent = mode
-    ? 'En pause, touche une case ou glisse pour dessiner. Appuie sur Play pour lancer.'
+    ? 'Touche une case ou glisse pour dessiner, même pendant la simulation.'
     : 'Choisis un mode de départ.';
   render();
 }
 
 ui.draw.onclick = () => setup('draw');
-ui.random.onclick = () => setup('random', Uint8Array.from({ length: area }, () => Math.random() < .28 ? 1 : 0));
+ui.random.onclick = () => setup('random', Uint8Array.from({ length: size * size }, () => Math.random() < .28 ? 1 : 0));
 ui.patterns.onchange = () => {
   const [kind, key] = ui.patterns.value.split(':');
-  if (kind === 'saved') setup('pattern', Uint8Array.from(saved[Number(key)].cells, Number));
+  if (kind === 'saved') {
+    const record = saved[Number(key)];
+    resizeBoard(record.size ?? 25);
+    setup('pattern', Uint8Array.from(record.cells, Number));
+  }
   if (kind === 'base') {
-    const cells = new Uint8Array(area);
-    for (const [x, y] of builtins[key]) cells[(y + 11) * size + x + 11] = 1;
+    const cells = new Uint8Array(size * size);
+    const offset = Math.floor((size - 3) / 2);
+    for (const [x, y] of builtins[key]) cells[(y + offset) * size + x + offset] = 1;
     setup('pattern', cells);
   }
 };
@@ -227,7 +237,7 @@ ui.save.onclick = () => {
   const proposedName = prompt('Nom du motif à sauvegarder', 'Motif ' + (saved.length + 1));
   const name = proposedName?.trim().slice(0, 60);
   if (!name) return;
-  const records = [...saved, { name, cells }];
+  const records = [...saved, { name, cells, size }];
   try {
     localStorage.setItem(storageKey, JSON.stringify(records));
     saved = records;
@@ -256,11 +266,12 @@ function paint(x, y) {
   }
   stroke.x = x;
   stroke.y = y;
-  if (generation === 0) initial = grid.slice();
+  if (generation === 0 && timer === null) initial = grid.slice();
   render();
 }
 ui.board.onpointerdown = event => {
-  if (!mode || timer !== null || stroke || event.button !== 0) return;
+  if (stroke || event.button !== 0) return;
+  if (!mode) setup('draw');
   const [x, y] = boardPosition(event);
   stroke = { x, y, value: 1 - grid[y * size + x], pointer: event.pointerId };
   ui.board.setPointerCapture(event.pointerId);
@@ -272,8 +283,36 @@ ui.board.onpointermove = event => {
 ui.board.onpointerup = ui.board.onpointercancel = ui.board.onlostpointercapture = event => {
   if (stroke?.pointer === event.pointerId) stroke = null;
 };
+function resizeBoard(nextSize) {
+  if (nextSize !== size) {
+    const offset = Math.floor(nextSize / 2) - Math.floor(size / 2);
+    const start = Math.max(0, -offset);
+    const end = Math.min(size, nextSize - offset);
+    const fit = cells => {
+      const resized = new Uint8Array(nextSize * nextSize);
+      for (let row = start; row < end; row++) {
+        resized.set(cells.subarray(row * size + start, row * size + end),
+          (row + offset) * nextSize + start + offset);
+      }
+      return resized;
+    };
+    grid = fit(grid);
+    if (initial) initial = fit(initial);
+    stroke = null;
+    size = nextSize;
+  }
+  ui.dimension.value = size;
+  ui.board.setAttribute('aria-label', 'Grille de Conway de ' + size + ' par ' + size + ' cases');
+}
+
+ui.resize.onsubmit = event => {
+  event.preventDefault();
+  const nextSize = ui.dimension.valueAsNumber;
+  if (!Number.isInteger(nextSize) || nextSize < 10 || nextSize > 200) return;
+  resizeBoard(nextSize);
+  render();
+};
 populatePatterns();
 render();
 </script>
 </html>
-
