@@ -1,1 +1,279 @@
+<!doctype html>
+<html lang="fr">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jeu de la vie</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#0b0f19;color:#f8fafc;accent-color:#fbbf24}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+main{width:min(100% - 24px,32rem);margin:16px auto;display:grid;gap:10px}
+header,section,details{background:#111827;border:1px solid #263247;border-radius:16px;padding:12px}
+header,.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+header div{flex:1}
+h1{font-size:1rem;color:#fbbf24;margin:0}
+p{margin:8px 0;color:#cbd5e1}
+#stats{font-size:.8rem;color:#cbd5e1;font-variant-numeric:tabular-nums}
+.logo,.primary{background:linear-gradient(125deg,#fbbf24,#f97316);color:#080d17;font-weight:800}
+.logo{padding:9px 12px;border-radius:12px}
+.board{padding:7px;border:2px solid #78521a;border-radius:18px}
+canvas{display:block;width:100%;aspect-ratio:1;border-radius:9px}
+canvas.editable{touch-action:none;cursor:crosshair}
+button,select{font:inherit;min-height:42px;padding:6px 10px;border:1px solid #354258;border-radius:11px;background:#1e293b;color:inherit}
+button{cursor:pointer}
+button:disabled{opacity:.46;cursor:default}
+select{max-width:100%}
+label{display:inline-flex;align-items:center;gap:6px}
+input[type=color]{width:42px;height:36px}
+input[type=range]{width:105px}
+section>.row+.row{margin-top:8px}
+summary{cursor:pointer;color:#fbbf24}
+#status:empty{display:none}
+</style>
+<main>
+<header><span class="logo" aria-hidden="true">C</span><div><h1>JEU DE LA VIE</h1><span id="stats"></span></div></header>
+<section id="choose" aria-label="Choisir un départ">
+<p>Comment veux-tu commencer ?</p>
+<div class="row"><button id="draw">Dessiner</button><button id="random">Départ aléatoire</button></div>
+<p><label for="patterns">Choisir un motif</label></p>
+<select id="patterns"><option value="">Sélectionner…</option></select>
+</section>
+<section class="board" aria-label="Plateau"><canvas id="board" width="750" height="750" aria-label="Grille de Conway de 25 par 25 cases"></canvas></section>
+<section aria-label="Commandes">
+<div class="row">
+<button id="play" class="primary"><span aria-hidden="true">▶</span> Play</button>
+<button id="step">Un pas</button>
+<button id="save">Sauvegarder le motif</button>
+</div>
+<div class="row">
+<button id="rewind">Revenir à t=0</button>
+<button id="reset">Reset</button>
+<button id="clear">Effacer</button>
+</div>
+<div class="row"><label>Vitesse <input id="speed" type="range" min="1" max="20" value="5"><output id="rate">5 gén./s</output></label></div>
+<p id="hint">Choisis un mode de départ.</p><p id="status" role="status"></p>
+</section>
+<section class="row" aria-label="Couleurs">
+<label>Vivantes <input type="color" id="alive" value="#000000"></label>
+<label>Mortes <input type="color" id="dead" value="#ffffff"></label>
+<button id="colors">Noir et blanc</button>
+</section>
+<details><summary>Règles du jeu</summary>
+<p>Une cellule morte naît si elle a exactement 3 voisines vivantes. Une cellule vivante survit avec 2 ou 3 voisines vivantes. Les diagonales comptent et les cases hors du plateau sont mortes.</p>
+<p>Toutes les cellules évoluent en même temps. Tu peux sauvegarder la grille affichée pour la rejouer comme motif de départ dans ce navigateur.</p>
+</details>
+</main>
+<script>
+'use strict';
+const ui = Object.fromEntries([...document.querySelectorAll('[id]')].map(element => [element.id, element]));
+const size = 25;
+const area = size * size;
+const cell = ui.board.width / size;
+const ctx = ui.board.getContext('2d');
+const storageKey = 'conway-jeu-de-la-vie-25-v1:' + location.pathname;
+const builtins = {
+  'Bloc': [[0,0],[1,0],[0,1],[1,1]],
+  'Clignotant': [[0,1],[1,1],[2,1]],
+  'Planeur': [[1,0],[2,1],[0,2],[1,2],[2,2]]
+};
+let saved = [];
+try {
+  const records = JSON.parse(localStorage.getItem(storageKey));
+  if (Array.isArray(records)) {
+    saved = records.filter(record => record && typeof record.name === 'string' &&
+      typeof record.cells === 'string' && /^[01]{625}$/.test(record.cells));
+  }
+} catch {}
+let grid = new Uint8Array(area);
+let initial = null;
+let generation = 0;
+let timer = null;
+let mode = '';
+let stroke = null;
+
+function populatePatterns() {
+  ui.patterns.length = 1;
+  for (const name of Object.keys(builtins)) ui.patterns.add(new Option(name, 'base:' + name));
+  saved.forEach((record, index) => ui.patterns.add(new Option(record.name, 'saved:' + index)));
+}
+
+function render() {
+  ctx.fillStyle = ui.dead.value;
+  ctx.fillRect(0, 0, ui.board.width, ui.board.height);
+  ctx.fillStyle = ui.alive.value;
+  let population = 0;
+  grid.forEach((value, index) => {
+    if (!value) return;
+    population++;
+    ctx.fillRect((index % size) * cell, Math.floor(index / size) * cell, cell, cell);
+  });
+  ctx.beginPath();
+  for (let i = 1; i < size; i++) {
+    const p = i * cell + .5;
+    ctx.moveTo(p, 0); ctx.lineTo(p, ui.board.height);
+    ctx.moveTo(0, p); ctx.lineTo(ui.board.width, p);
+  }
+  ctx.strokeStyle = '#80808066';
+  ctx.stroke();
+  ui.stats.textContent = 'Génération ' + generation + ' · ' + population + ' vivantes';
+  ui.board.classList.toggle('editable', !!mode && timer === null);
+  ui.play.disabled = ui.step.disabled = ui.clear.disabled = !mode;
+  ui.clear.disabled ||= timer !== null;
+  ui.save.disabled = !mode || population === 0;
+  ui.rewind.disabled = !initial;
+  ui.reset.disabled = !mode;
+}
+
+function advance() {
+  if (!initial) initial = grid.slice();
+  const next = new Uint8Array(area);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let neighbors = 0;
+      for (let ny = Math.max(0, y - 1); ny <= Math.min(size - 1, y + 1); ny++) {
+        for (let nx = Math.max(0, x - 1); nx <= Math.min(size - 1, x + 1); nx++) {
+          neighbors += grid[ny * size + nx];
+        }
+      }
+      const index = y * size + x;
+      neighbors -= grid[index];
+      next[index] = neighbors === 3 || (neighbors === 2 && grid[index]) ? 1 : 0;
+    }
+  }
+  grid = next;
+  generation++;
+  render();
+}
+
+function pause() {
+  clearInterval(timer);
+  timer = null;
+  ui.play.innerHTML = '<span aria-hidden="true">▶</span> Play';
+}
+
+function run() {
+  stroke = null;
+  if (!initial) initial = grid.slice();
+  timer = setInterval(advance, 1000 / Number(ui.speed.value));
+  ui.play.innerHTML = '<span aria-hidden="true">Ⅱ</span> Pause';
+}
+
+function setup(nextMode, cells = new Uint8Array(area)) {
+  pause();
+  stroke = null;
+  mode = nextMode;
+  grid = cells;
+  initial = mode && mode !== 'draw' ? grid.slice() : null;
+  generation = 0;
+  ui.choose.hidden = !!mode;
+  ui.patterns.value = '';
+  ui.status.textContent = '';
+  ui.hint.textContent = mode
+    ? 'En pause, touche une case ou glisse pour dessiner. Appuie sur Play pour lancer.'
+    : 'Choisis un mode de départ.';
+  render();
+}
+
+ui.draw.onclick = () => setup('draw');
+ui.random.onclick = () => setup('random', Uint8Array.from({ length: area }, () => Math.random() < .28 ? 1 : 0));
+ui.patterns.onchange = () => {
+  const [kind, key] = ui.patterns.value.split(':');
+  if (kind === 'saved') setup('pattern', Uint8Array.from(saved[Number(key)].cells, Number));
+  if (kind === 'base') {
+    const cells = new Uint8Array(area);
+    for (const [x, y] of builtins[key]) cells[(y + 11) * size + x + 11] = 1;
+    setup('pattern', cells);
+  }
+};
+ui.play.onclick = () => {
+  if (timer === null) run(); else pause();
+  render();
+};
+ui.step.onclick = () => {
+  pause();
+  stroke = null;
+  advance();
+};
+ui.reset.onclick = () => setup('');
+ui.rewind.onclick = () => {
+  pause();
+  stroke = null;
+  grid = initial.slice();
+  generation = 0;
+  ui.status.textContent = '';
+  render();
+};
+ui.clear.onclick = () => {
+  stroke = null;
+  grid.fill(0);
+  if (generation === 0) initial = null;
+  render();
+};
+ui.speed.oninput = () => {
+  ui.rate.value = ui.speed.value + ' gén./s';
+  if (timer !== null) {
+    pause();
+    run();
+  }
+};
+ui.alive.oninput = ui.dead.oninput = render;
+ui.colors.onclick = () => {
+  ui.alive.value = '#000000';
+  ui.dead.value = '#ffffff';
+  render();
+};
+ui.save.onclick = () => {
+  const cells = grid.join('');
+  const proposedName = prompt('Nom du motif à sauvegarder', 'Motif ' + (saved.length + 1));
+  const name = proposedName?.trim().slice(0, 60);
+  if (!name) return;
+  const records = [...saved, { name, cells }];
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(records));
+    saved = records;
+    populatePatterns();
+    ui.status.textContent = '« ' + name + ' » a été ajouté à la liste des motifs.';
+  } catch {
+    ui.status.textContent = 'Impossible de sauvegarder ce motif dans ce navigateur.';
+  }
+};
+
+function boardPosition(event) {
+  const bounds = ui.board.getBoundingClientRect();
+  const toCell = fraction => Math.max(0, Math.min(size - 1, Math.floor(fraction * size)));
+  return [toCell((event.clientX - bounds.left) / bounds.width),
+          toCell((event.clientY - bounds.top) / bounds.height)];
+}
+
+function paint(x, y) {
+  const dx = x - stroke.x;
+  const dy = y - stroke.y;
+  const length = Math.max(Math.abs(dx), Math.abs(dy), 1);
+  for (let i = 0; i <= length; i++) {
+    const column = Math.round(stroke.x + dx * i / length);
+    const row = Math.round(stroke.y + dy * i / length);
+    grid[row * size + column] = stroke.value;
+  }
+  stroke.x = x;
+  stroke.y = y;
+  if (generation === 0) initial = grid.slice();
+  render();
+}
+ui.board.onpointerdown = event => {
+  if (!mode || timer !== null || stroke || event.button !== 0) return;
+  const [x, y] = boardPosition(event);
+  stroke = { x, y, value: 1 - grid[y * size + x], pointer: event.pointerId };
+  ui.board.setPointerCapture(event.pointerId);
+  paint(x, y);
+};
+ui.board.onpointermove = event => {
+  if (stroke?.pointer === event.pointerId) paint(...boardPosition(event));
+};
+ui.board.onpointerup = ui.board.onpointercancel = ui.board.onlostpointercapture = event => {
+  if (stroke?.pointer === event.pointerId) stroke = null;
+};
+populatePatterns();
+render();
+</script>
+</html>
 
